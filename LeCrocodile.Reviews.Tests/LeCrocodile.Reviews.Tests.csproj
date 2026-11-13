@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net11.0</TargetFramework>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../LeCrocodile.Reviews.Api/LeCrocodile.Reviews.Api.csproj" />
+        <Content Include="../LeCrocodile.Reviews.Api/Data/cocktail-ids.json" Link="Data/cocktail-ids.json"
+                 CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+</Project>

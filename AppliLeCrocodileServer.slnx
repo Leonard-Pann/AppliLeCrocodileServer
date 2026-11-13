@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="LeCrocodile.Reviews.Api/LeCrocodile.Reviews.Api.csproj" />
+  <Project Path="LeCrocodile.Reviews.Contracts/LeCrocodile.Reviews.Contracts.csproj" />
+  <Project Path="LeCrocodile.Reviews.Tests/LeCrocodile.Reviews.Tests.csproj" />
+</Solution>
