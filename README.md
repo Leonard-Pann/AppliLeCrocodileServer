@@ -1,9 +1,9 @@
 # Le Crocodile reviews API
 
-ASP.NET Core API targeting **.NET 11**, with persistent **SQLite SQL** storage, direct Kestrel HTTPS hosting, and shared C#
+ASP.NET Core API targeting **.NET 10**, with persistent **SQLite SQL** storage, direct Kestrel HTTPS hosting, and shared C#
 contracts for the Avalonia app. Windows 11 can run the published server without Docker, IIS, or a database-server install.
 The API has no dependency on the mobile application. The shared contracts target .NET 10 so the existing mobile projects
-can reference them; .NET 11 can load that assembly.
+can reference them.
 
 ## Delivered behavior
 
@@ -26,28 +26,23 @@ refresh. An already-open page does not update automatically when somebody else s
 
 ## SDK and local development
 
-As of 2026-10-31, this workspace uses the .NET 11 RC3 SDK pinned in `global.json`. Microsoft publishes it on the
-[.NET 11 download page](https://dotnet.microsoft.com/en-us/download/dotnet/11.0). Upgrade the SDK/runtime to the final
-.NET 11 release when available. `Microsoft.Data.Sqlite` 10.0.13 is compatible with this target.
+The solution uses the installed .NET 10 SDK. `global.json` accepts stable .NET 10 feature bands (10.0.100 or newer).
+It no longer requires the private .NET 11 RC SDK in `.tools/dotnet`. Visual Studio and the command line use the same SDK.
 
-The downloaded SDK is already available in this workspace under `.tools/dotnet`; it did not replace the system SDK.
 From this backend directory in PowerShell:
 
 ```powershell
-$env:DOTNET_CLI_HOME = Join-Path (Get-Location) '.tools/cli'
-$dotnetExecutable = Join-Path (Get-Location) '.tools/dotnet/dotnet.exe'
-& $dotnetExecutable build
-& $dotnetExecutable dev-certs https --trust
-& $dotnetExecutable run --project LeCrocodile.Reviews.Api
+dotnet --version
+dotnet restore
+dotnet build -c Release
+dotnet run --project LeCrocodile.Reviews.Tests -c Release
+dotnet dev-certs https --trust
+dotnet run --project LeCrocodile.Reviews.Api
 ```
 
-The trust command is a local Desktop development step that prompts Windows to trust the development certificate.
-It was not run automatically. The API listens on **https://localhost:7443** (bound to all interfaces by default).
-Stop the console server with Ctrl+C. For loopback-only development, set
-`$env:Kestrel__Endpoints__Https__Url = 'https://localhost:7443'` before starting it.
-
-If .NET 11 is installed normally, use `dotnet` instead of the local executable. Builds also require .NET 10 reference
-assemblies for the contracts; the SDK restores them when necessary. No .NET 10 runtime is required to run the published API.
+The trust command is only for local development. Test `https://localhost:7443/health` on the same computer.
+For loopback-only development, set `$env:Kestrel__Endpoints__Https__Url = 'https://localhost:7443'`.
+The default wildcard listener supports IPv4 and IPv6. Phones require a certificate valid for the actual server address.
 
 ## Connect the mobile app
 
@@ -62,21 +57,60 @@ Edit `../AppliLeCrocodile/AppliLeCrocodile/Assets/Configuration/reviews-api.json
 Rebuild the app after changing this bundled asset. Both repositories must remain sibling directories because the app
 references `LeCrocodile.Reviews.Contracts`. The rest of the menu remains bundled locally.
 
-For physical Android/iOS devices, use a DNS name reachable from the device and a valid server certificate for that name,
+For physical Android/iOS devices, use a DNS name or public IP reachable from the device and a valid server certificate for it,
 including the intermediate chain. The development localhost certificate does not work automatically on phones.
 Use a publicly trusted certificate, or provision a development CA trusted by the device using the platform's normal
 device-management tooling. The app never bypasses certificate validation. `localhost` on a phone refers to that phone,
 not the Windows server. Permit the selected TCP port through Windows Firewall and configure DNS/router forwarding
 where required by the deployment network. No firewall or router settings were changed automatically.
 
+### Direct public IPv6 deployment on a Bbox
+
+Use the computer's global, non-temporary IPv6 from `ipconfig`, not the Bbox address, a temporary address, `fe80::`, or `::1`.
+The bundled client URL uses brackets around the IPv6: `https://[PUBLIC_IPV6]:7443/`.
+An IPv6-only URL requires IPv6 connectivity on every client network. An ISP prefix change requires a new certificate
+and an application update. A non-temporary interface address does not guarantee a permanent ISP prefix.
+
+1. Open the Bbox administration page at its local gateway address. In its IPv6 firewall/pinhole settings, allow inbound
+   TCP 7443 to the computer's global IPv6. Allow TCP 80 to that same address for automated ACME HTTP validation.
+   Menu names depend on the Bbox model. Do not disable the entire firewall. IPv6 uses firewall rules, not IPv4 NAT forwarding.
+2. In an elevated Windows PowerShell, allow the same ports through Windows Firewall. Scope the rule to the server's
+   global IPv6 and its network interface. Check `Get-NetConnectionProfile`: a Private-only rule will not match a Public network.
+3. Request a publicly trusted certificate with an IP subject alternative name. A localhost development certificate
+   is insufficient. Let's Encrypt supports IPv4 and IPv6 certificates through the `shortlived` profile, lasting about six days.
+   See [IP certificate availability](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability).
+4. The locally downloaded `.tools/simple-acme/wacs.exe` is simple-acme 2.4.1.2444. Its archive SHA256 was checked against
+   the official download page. Copy its entire directory to a durable location such as `C:\LeCrocodile\Acme` before setting
+   up renewal. Run elevated, use manual identifier input with the public IP, `shortlived`, HTTP-01 self-hosting validation,
+   and PFX file storage. Use a stable output filename and keep the PFX password in local configuration only.
+   Port 80 must be reachable externally for issuance and every renewal; it is separate from the HTTPS API on 7443.
+   See [CLI options](https://simple-acme.com/reference/cli) and [PFX storage](https://simple-acme.com/reference/plugins/store/pfxfile).
+5. Configure the published API with the certificate and an absolute database path as shown below. The wildcard HTTPS URL
+   supports both IP families. Start it and test `/health` from a phone with Wi-Fi disabled, using the exact IPv6 URL.
+6. Use Task Scheduler to start the API at boot with its deployment directory as the working directory, a dedicated account,
+   no execution time limit, restart on failure, and no concurrent instances. Do not use `sc.exe create` with this console app:
+   it does not implement the Windows service lifetime.
+7. Enable simple-acme's renewal task and verify its next run. Configure a successful-renewal deployment action to restart
+   the API task so Kestrel loads the new PFX. Keep the computer awake and connected. Verify renewal and certificate expiry
+   monitoring before relying on the server: a manually issued certificate alone is not a complete deployment.
+
+For IPv4 instead, reserve the computer's LAN IPv4 in DHCP and forward Bbox public TCP 7443 to LAN TCP 7443, plus public
+TCP 80 to LAN TCP 80 for ACME. Use the Bbox WAN public IPv4 in the client and in the certificate. If the WAN address is
+private/shared or inbound ports are unavailable, ask Bouygues about public IPv4 availability; a local firewall rule cannot
+overcome carrier-grade NAT. Do not use `192.168.x.x` as the public mobile endpoint.
+
+At verification time, the published executable returned `{"status":"Healthy"}` over localhost HTTPS, 44 backend checks
+and 101 client checks passed. Public certificate issuance, Windows/Bbox firewall changes, and startup/renewal tasks
+remain deployment steps; external Internet reachability has not been verified.
+
 ## Publish and run on Windows 11
 
-Install the **ASP.NET Core Runtime 11 x64** corresponding to the build, or keep the local SDK installed. The base .NET
+Install the **ASP.NET Core Runtime 10 x64** corresponding to the build, or use the installed system SDK. The base .NET
 runtime alone does not include ASP.NET Core. A Windows x64 framework-dependent publication is already in `publish/`.
 Regenerate it from this backend directory with:
 
 ```powershell
-& $dotnetExecutable publish LeCrocodile.Reviews.Api -c Release -r win-x64 --self-contained false -o publish
+dotnet publish LeCrocodile.Reviews.Api -c Release -r win-x64 --self-contained false -o publish
 ```
 
 Copy the contents of `publish/` to a durable installation directory. Set an absolute database path outside the binary
@@ -86,13 +120,13 @@ directory so future deployments cannot replace the data. Run from the directory 
 Set-Location .\publish
 $env:ASPNETCORE_ENVIRONMENT = 'Production'
 $env:Database__Path = 'C:\LeCrocodile\Data\reviews.db'
-$env:Kestrel__Endpoints__Https__Url = 'https://0.0.0.0:7443'
+$env:Kestrel__Endpoints__Https__Url = 'https://*:7443'
 $env:Kestrel__Certificates__Default__Path = 'C:\LeCrocodile\Certificates\reviews.pfx'
 $env:Kestrel__Certificates__Default__Password = '<PFX password supplied securely>'
 dotnet .\LeCrocodile.Reviews.Api.dll
 ```
 
-If using the downloaded SDK rather than an installed runtime, invoke its absolute `dotnet.exe` path in the last command.
+The .NET 10 SDK already includes the ASP.NET Core runtime needed on this computer.
 Do not commit a PFX password or certificate private key. Restrict directory permissions to the account running the server.
 The account needs write access to the database directory, including the SQLite WAL/SHM sidecars. Certificate renewal is
 an operator responsibility; restart the process after replacing a certificate to ensure it is loaded.
@@ -184,7 +218,7 @@ a SQLite administration tool while following their own moderation and retention 
 ## Verification
 
 ```powershell
-& $dotnetExecutable run --project LeCrocodile.Reviews.Tests
+dotnet run --project LeCrocodile.Reviews.Tests
 ```
 
 The dependency-free backend executable tests real SQLite persistence, upserts, concurrent writes, keyset pagination,
