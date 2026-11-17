@@ -120,6 +120,14 @@ internal static class Program
         Check(cancellationObserved, "Canceled repository work is not started.");
         string backupPath = databasePath + ".backup.db";
         repository.Backup(backupPath);
+        using (SqliteConnection snapshot = new SqliteConnection($"Data Source={backupPath};Mode=ReadOnly;Pooling=False"))
+        {
+            snapshot.Open();
+            using SqliteCommand journalMode = snapshot.CreateCommand();
+            journalMode.CommandText = "PRAGMA journal_mode;";
+            Check((string)journalMode.ExecuteScalar()! == "delete", "Backup snapshots require no writable WAL sidecars.");
+        }
+
         ReviewRepository backup = new ReviewRepository(backupPath);
         Check(backup.GetPage("ABBAYE", firstUser, null, 20, default).TotalCount == 3,
             "The online SQLite backup includes committed WAL data.");
@@ -134,6 +142,51 @@ internal static class Program
         }
 
         Check(overwriteRejected, "Creating a backup cannot overwrite an existing file.");
+        string importedPath = databasePath + ".imported.db";
+        Check(DatabaseMaintenance.Inspect(backupPath) == 4, "Inspection validates the backup and counts all reviews.");
+        Check(DatabaseMaintenance.Import(backupPath, importedPath) == 4, "Import retains all backed-up reviews.");
+        ReviewRepository imported = new ReviewRepository(importedPath);
+        Check(imported.GetPage("ABBAYE", firstUser, null, 20, default).Items
+            .SequenceEqual(backup.GetPage("ABBAYE", firstUser, null, 20, default).Items),
+            "Import preserves review IDs, ownership, text, ratings and timestamps.");
+        CheckImportRejected<IOException>(backupPath, importedPath, "Import cannot overwrite an existing database.");
+        string orphanPath = databasePath + ".orphan.db";
+        File.WriteAllText(orphanPath + "-wal", "Retained sidecar");
+        CheckImportRejected<IOException>(backupPath, orphanPath, "Import refuses a destination with a leftover WAL.");
+        string invalidPath = databasePath + ".invalid.db";
+        File.WriteAllText(invalidPath, "Not a database");
+        CheckImportRejected<SqliteException>(invalidPath, orphanPath + ".new",
+            "Import rejects corrupt input without creating the destination.");
+        Check(!File.Exists(orphanPath + ".new"), "Failed validation leaves the destination absent.");
+        CheckImportRejected<SqliteException>(databasePath + ".missing", orphanPath + ".new",
+            "Import never creates a missing source database.");
+        Check(!File.Exists(databasePath + ".missing"), "Missing input remains absent after failed import.");
+        using (SqliteConnection unsupported = new SqliteConnection($"Data Source={invalidPath}.new;Pooling=False"))
+        {
+            unsupported.Open();
+            using SqliteCommand command = unsupported.CreateCommand();
+            command.CommandText = "PRAGMA user_version=2;";
+            command.ExecuteNonQuery();
+        }
+
+        CheckImportRejected<InvalidDataException>(invalidPath + ".new", orphanPath + ".new",
+            "Import refuses unsupported schemas.");
+    }
+
+    private static void CheckImportRejected<TException>(string source, string destination, string message)
+        where TException : Exception
+    {
+        bool rejected = false;
+        try
+        {
+            DatabaseMaintenance.Import(source, destination);
+        }
+        catch (TException)
+        {
+            rejected = true;
+        }
+
+        Check(rejected, message);
     }
 
     private static async Task VerifyHttpsApiAsync(string databasePath)

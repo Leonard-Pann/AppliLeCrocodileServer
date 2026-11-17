@@ -96,6 +96,10 @@ public sealed class ReviewRepository
         }.ToString());
         destination.Open();
         source.BackupDatabase(destination);
+        // A standalone snapshot must be readable from a read-only import mount without creating WAL sidecars.
+        using SqliteCommand command = destination.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=DELETE;";
+        command.ExecuteScalar();
     }
 
     public ReviewPage GetPage(string cocktailId, Guid userId, long? before, int limit, CancellationToken cancellationToken)

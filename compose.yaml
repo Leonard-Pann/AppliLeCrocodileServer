@@ -1,0 +1,35 @@
+name: lecrocodile
+
+services:
+  reviews:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+      - "7443:7443"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Database__Path: /data/reviews.db
+      Kestrel__Endpoints__Https__Url: https://*:7443
+      Kestrel__Certificates__Default__Path: /certificates/${PFX_FILENAME:-reviews.pfx}
+      Kestrel__Certificates__Default__Password: ${PFX_PASSWORD:-}
+    volumes:
+      - reviews-data:/data
+      - reviews-backups:/backups
+      - type: bind
+        source: ${CERT_DIRECTORY:?Set CERT_DIRECTORY to the directory containing reviews.pfx}
+        target: /certificates
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  reviews-data:
+  reviews-backups:

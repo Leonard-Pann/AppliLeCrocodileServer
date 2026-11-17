@@ -1,5 +1,8 @@
 # Le Crocodile reviews API
 
+See [Docker deployment and recovery](DOCKER.md) for the current migration status, guarded database import,
+Linux verification steps, certificate renewal and outstanding external-network tests.
+
 ASP.NET Core API targeting **.NET 10**, with persistent **SQLite SQL** storage, direct Kestrel HTTPS hosting, and shared C#
 contracts for the Avalonia app. Windows 11 can run the published server without Docker, IIS, or a database-server install.
 The API has no dependency on the mobile application. The shared contracts target .NET 10 so the existing mobile projects

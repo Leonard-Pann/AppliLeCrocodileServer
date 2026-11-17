@@ -1,0 +1,14 @@
+.git
+.vs
+.tools
+**/bin
+**/obj
+publish
+**/appsettings.Local.json
+**/*.pfx
+**/*.p12
+**/*.key
+**/*.db
+**/*.db-wal
+**/*.db-shm
+.env

@@ -1,0 +1,8 @@
+{
+  "Mode": "native",
+  "NativeDirectory": "D:\\Program files\\LeCrocodile",
+  "ProjectDirectory": "C:\\absolute\\path\\to\\AppliLeCrocodileServer",
+  "DockerExecutable": "C:\\Users\\USERNAME\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe",
+  "CertificatePath": "D:\\Program files\\LeCrocodile\\Certificates\\reviews-ethernet.pfx",
+  "HealthUri": "https://[2001:861:5872:b2b0:492c:d813:fe01:4502]:7443/health"
+}
