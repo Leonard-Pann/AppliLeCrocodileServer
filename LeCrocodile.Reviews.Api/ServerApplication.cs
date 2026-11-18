@@ -141,10 +141,10 @@ public static class ServerApplication
             errors["rating"] = ["Use an integer between 1 and 5."];
         }
 
-        if (string.IsNullOrWhiteSpace(request.Comment) || request.Comment.Trim().Length > 2000
+        if (request.Comment is null || request.Comment.Trim().Length > 2000
             || request.Comment.Any(character => char.IsControl(character) && character is not '\r' and not '\n' and not '\t'))
         {
-            errors["comment"] = ["Use 1 to 2000 characters. Only line breaks and tabs are allowed as control characters."];
+            errors["comment"] = ["Use at most 2000 characters. Only line breaks and tabs are allowed as control characters."];
         }
 
         return errors.Count > 0 ? Results.ValidationProblem(errors) : Results.Ok(

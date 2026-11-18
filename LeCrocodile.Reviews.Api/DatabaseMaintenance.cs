@@ -15,9 +15,9 @@ public static class DatabaseMaintenance
         }
 
         command.CommandText = "PRAGMA user_version;";
-        if ((long)command.ExecuteScalar()! != 1)
+        if ((long)command.ExecuteScalar()! is not (1 or 2))
         {
-            throw new InvalidDataException("Only review database schema version 1 can be imported.");
+            throw new InvalidDataException("Only review database schema versions 1 and 2 can be imported.");
         }
 
         command.CommandText = "SELECT COUNT(*) FROM Reviews;";

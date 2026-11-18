@@ -29,14 +29,41 @@ public sealed class ReviewRepository
         command.ExecuteNonQuery();
         command.CommandText = "PRAGMA user_version;";
         long version = (long)command.ExecuteScalar()!;
-        if (version > 1)
+        if (version > 2)
         {
             throw new InvalidDataException(
                 "The database schema is newer than this server. Upgrade the server before starting it.");
         }
 
+        if (version == 2)
+        {
+            return;
+        }
+
         if (version == 1)
         {
+            using SqliteTransaction migration = connection.BeginTransaction();
+            command.Transaction = migration;
+            command.CommandText = """
+                CREATE TABLE Reviews_new (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    CocktailId TEXT NOT NULL CHECK(length(CocktailId) BETWEEN 1 AND 128),
+                    UserId TEXT NOT NULL CHECK(length(UserId) = 32),
+                    UserName TEXT NOT NULL CHECK(length(trim(UserName)) BETWEEN 1 AND 40),
+                    Rating INTEGER NOT NULL CHECK(Rating BETWEEN 1 AND 5),
+                    Comment TEXT NOT NULL CHECK(length(trim(Comment)) <= 2000),
+                    CreatedAt TEXT NOT NULL,
+                    UpdatedAt TEXT NOT NULL,
+                    UNIQUE(CocktailId, UserId)
+                ) STRICT;
+                INSERT INTO Reviews_new SELECT * FROM Reviews;
+                DROP TABLE Reviews;
+                ALTER TABLE Reviews_new RENAME TO Reviews;
+                CREATE INDEX IX_Reviews_CocktailId_Id ON Reviews(CocktailId, Id DESC);
+                PRAGMA user_version=2;
+                """;
+            command.ExecuteNonQuery();
+            migration.Commit();
             return;
         }
 
@@ -49,13 +76,13 @@ public sealed class ReviewRepository
                 UserId TEXT NOT NULL CHECK(length(UserId) = 32),
                 UserName TEXT NOT NULL CHECK(length(trim(UserName)) BETWEEN 1 AND 40),
                 Rating INTEGER NOT NULL CHECK(Rating BETWEEN 1 AND 5),
-                Comment TEXT NOT NULL CHECK(length(trim(Comment)) BETWEEN 1 AND 2000),
+                Comment TEXT NOT NULL CHECK(length(trim(Comment)) <= 2000),
                 CreatedAt TEXT NOT NULL,
                 UpdatedAt TEXT NOT NULL,
                 UNIQUE(CocktailId, UserId)
             ) STRICT;
             CREATE INDEX IX_Reviews_CocktailId_Id ON Reviews(CocktailId, Id DESC);
-            PRAGMA user_version=1;
+            PRAGMA user_version=2;
             """;
         command.ExecuteNonQuery();
         transaction.Commit();

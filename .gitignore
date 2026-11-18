@@ -39,6 +39,7 @@ coverage/
 
 # Secrets and local configuration
 .env
+.duckdns-token
 .env.*
 !.env.example
 appsettings.Local.json

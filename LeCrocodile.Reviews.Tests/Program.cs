@@ -29,6 +29,7 @@ internal static class Program
         Directory.CreateDirectory(directory);
         try
         {
+            VerifyMigration(Path.Combine(directory, "migration.db"));
             await VerifyRepositoryAsync(Path.Combine(directory, "repository.db"));
             await VerifyHttpsApiAsync(Path.Combine(directory, "api.db"));
         }
@@ -66,6 +67,38 @@ internal static class Program
         clock.Advance(TimeSpan.FromMilliseconds(1));
         using RateLimitLease renewed = limiter.AttemptAcquire();
         Check(renewed.IsAcquired, "A permit becomes available exactly one second after acceptance.");
+    }
+
+    private static void VerifyMigration(string databasePath)
+    {
+        Guid user = Guid.NewGuid();
+        using (SqliteConnection connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE Reviews (Id INTEGER PRIMARY KEY AUTOINCREMENT, CocktailId TEXT NOT NULL,
+                    UserId TEXT NOT NULL, UserName TEXT NOT NULL, Rating INTEGER NOT NULL,
+                    Comment TEXT NOT NULL CHECK(length(trim(Comment)) BETWEEN 1 AND 2000),
+                    CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL, UNIQUE(CocktailId, UserId)) STRICT;
+                CREATE INDEX IX_Reviews_CocktailId_Id ON Reviews(CocktailId, Id DESC);
+                INSERT INTO Reviews VALUES(42, 'ABBAYE', $user, 'Visitor', 4, 'Original',
+                    '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+                PRAGMA user_version=1;
+                """;
+            command.Parameters.AddWithValue("$user", user.ToString("N"));
+            command.ExecuteNonQuery();
+        }
+
+        ReviewRepository repository = new ReviewRepository(databasePath);
+        repository.Initialize();
+        ReviewResponse original = repository.GetPage("ABBAYE", user, null, 20, default).Items.Single();
+        Check(original.Id == 42 && original.Comment == "Original" && original.IsOwnReview,
+            "Migration preserves existing reviews and ownership.");
+        ReviewResponse rating = repository.Save("ABBAYE", user, new SubmitReviewRequest("Visitor", 5, ""), default);
+        Check(rating.Id == 42 && rating.Comment == "" && rating.Rating == 5,
+            "Migrated databases accept a rating without a comment.");
+        Check(DatabaseMaintenance.Inspect(databasePath) == 1, "Migrated databases remain valid for backup and import.");
     }
 
     private static async Task VerifyRepositoryAsync(string databasePath)
@@ -165,7 +198,7 @@ internal static class Program
         {
             unsupported.Open();
             using SqliteCommand command = unsupported.CreateCommand();
-            command.CommandText = "PRAGMA user_version=2;";
+            command.CommandText = "PRAGMA user_version=3;";
             command.ExecuteNonQuery();
         }
 
@@ -231,6 +264,15 @@ internal static class Program
                 "HTTPS submissions persist trimmed Unicode content.");
         }
 
+        using (HttpResponseMessage ratingOnly = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Put, path)
+        {
+            Content = JsonContent.Create(new SubmitReviewRequest("Visitor", 4, ""), options: JsonOptions)
+        }))
+        {
+            Check(ratingOnly.StatusCode == HttpStatusCode.OK && (await ReadAsync<ReviewResponse>(ratingOnly)).Comment == "",
+                "The API accepts a rating without a comment.");
+        }
+
         string otherPath = $"/api/v1/cocktails/ABBAYE/reviews?userId={Guid.NewGuid():D}";
         using (HttpResponseMessage response = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Get, otherPath)))
         {
@@ -256,7 +298,6 @@ internal static class Program
             new SubmitReviewRequest(new string('x', 41), 3, "Comment"),
             new SubmitReviewRequest("Visitor", 0, "Comment"),
             new SubmitReviewRequest("Visitor", 6, "Comment"),
-            new SubmitReviewRequest("Visitor", 3, " "),
             new SubmitReviewRequest("Visitor", 3, new string('x', 2001)),
             new SubmitReviewRequest("Bad\0Name", 3, "Comment"),
             new SubmitReviewRequest(null!, 3, null!)

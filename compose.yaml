@@ -1,6 +1,26 @@
 name: lecrocodile
 
 services:
+  duckdns:
+    build:
+      context: .
+      dockerfile: Deployment/DuckDns.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DUCKDNS_DOMAIN: lecrocodile
+    volumes:
+      - type: bind
+        source: ./.duckdns-token
+        target: /run/secrets/duckdns-token
+        read_only: true
+        bind:
+          create_host_path: false
+
   reviews:
     build: .
     restart: unless-stopped

@@ -2,7 +2,7 @@ using LeCrocodile.Reviews.Api;
 
 if (args is ["--inspect", string inspectedPath])
 {
-    Console.WriteLine($"Database integrity: ok; schema: 1; reviews: {DatabaseMaintenance.Inspect(inspectedPath)}.");
+    Console.WriteLine($"Database integrity: ok; reviews: {DatabaseMaintenance.Inspect(inspectedPath)}.");
     return;
 }
 

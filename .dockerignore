@@ -12,3 +12,4 @@ publish
 **/*.db-wal
 **/*.db-shm
 .env
+.duckdns-token

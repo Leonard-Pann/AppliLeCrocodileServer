@@ -1,5 +1,31 @@
 # Docker deployment and recovery
 
+## Duck DNS certificate — 18 November 2026
+
+The running reviews service uses `reviews-duckdns.pfx` for `lecrocodile.duckdns.org`. Strict HTTPS health was checked
+using the hostname over local IPv4 and IPv6; public IPv6 and phone app access still need independent tests. The hostname
+currently has an IPv4 record only. The updater currently updates IPv4 only. The DNS-01 renewal was created with no
+automatic scheduler or deployment hook, so neither renewal nor Kestrel reload is automatic yet. Its current certificate
+expires 15 February 2027. The previous IP certificate remains available for rollback. The prior IP-certificate renewals
+may still rely on TCP 80; do not remove their rule until their lifecycle has been deliberately retired.
+
+## Duck DNS IPv4 updater
+
+The `duckdns` Compose service updates `lecrocodile.duckdns.org` on container start and every hour, using the
+public IPv4 detected by Duck DNS. It does not publish IPv6 or change the API URL or HTTPS certificate. Create an ignored
+`.duckdns-token` file in the repository root containing only the Duck DNS token. Restrict access to the account that runs
+Docker and administrators; never commit, paste, or share this token. The file is excluded from the Docker build context.
+
+```powershell
+docker compose up -d --build
+docker compose logs --tail 20 duckdns
+```
+
+The log should report a successful update. The service restarts with Docker Desktop after it has been created, unless
+explicitly stopped. Docker Desktop must itself start and the host must be online. DNS propagation and a new IPv4 port
+mapping can delay reachability. Update failures retry hourly. This does not prove that the phone app or certificate use
+the hostname: certificate issuance, renewal and application configuration still require separate work.
+
 ## Windows deployment — 17 November 2026
 
 - Docker Desktop's Linux engine built the image successfully; all 55 backend checks passed in the image build.
