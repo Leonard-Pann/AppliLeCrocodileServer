@@ -1,9 +1,0 @@
-services:
-  certificate:
-    environment:
-      ACME_SERVER: letsencrypt_test
-    healthcheck:
-      test: ["CMD-SHELL", "test -r /certificates/server.pfx && test \"$$(cat /certificates/deployment-identity)\" = \"$$DUCKDNS_DOMAIN.duckdns.org letsencrypt_test\""]
-  reviews:
-    ports: !override
-      - "127.0.0.1:17444:7443"

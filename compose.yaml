@@ -1,54 +1,6 @@
 name: lecrocodile
 
 services:
-  duckdns:
-    build:
-      context: .
-      dockerfile: Deployment/DuckDns.Dockerfile
-    restart: unless-stopped
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    environment:
-      DUCKDNS_DOMAIN: ${DUCKDNS_SUBDOMAIN:?Set DUCKDNS_SUBDOMAIN to your Duck DNS subdomain}
-    volumes:
-      - type: bind
-        source: ./.duckdns-token
-        target: /run/secrets/duckdns-token
-        read_only: true
-        bind:
-          create_host_path: false
-
-  certificate:
-    build:
-      context: .
-      dockerfile: Deployment/Certificate.Dockerfile
-    user: "0:1654"
-    restart: unless-stopped
-    read_only: true
-    cap_drop: [ALL]
-    cap_add: [CHOWN]
-    security_opt: [no-new-privileges:true]
-    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
-    environment:
-      DUCKDNS_DOMAIN: ${DUCKDNS_SUBDOMAIN:?Set DUCKDNS_SUBDOMAIN to your Duck DNS subdomain}
-      ACME_SERVER: letsencrypt
-    healthcheck:
-      test: ["CMD-SHELL", "test -r /certificates/server.pfx && test \"$$(cat /certificates/deployment-identity)\" = \"$$DUCKDNS_DOMAIN.duckdns.org letsencrypt\""]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 5m
-    volumes:
-      - acme-data:/acme.sh
-      - certificates:/certificates
-      - type: bind
-        source: ./.duckdns-token
-        target: /run/secrets/duckdns-token
-        read_only: true
-        bind:
-          create_host_path: false
-
   reviews:
     build: .
     restart: unless-stopped
@@ -57,25 +9,14 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
-    depends_on:
-      certificate:
-        condition: service_healthy
     ports: ["0.0.0.0:7443:7443"]
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       Database__Path: /data/reviews.db
-      Kestrel__Endpoints__Https__Url: https://0.0.0.0:7443
-      Kestrel__Certificates__Default__Path: /certificates/server.pfx
-      CertificateReload__Enabled: "true"
-      CertificateReload__Path: /certificates/server.pfx
-      CertificateReload__Host: ${DUCKDNS_SUBDOMAIN}.duckdns.org
     volumes:
       - reviews-data:/data
       - reviews-backups:/backups
-      - certificates:/certificates:ro
 
 volumes:
   reviews-data:
   reviews-backups:
-  acme-data:
-  certificates:

@@ -65,13 +65,6 @@ public static class ServerApplication
         {
             context.Response.Headers.CacheControl = "no-store";
             context.Response.Headers.XContentTypeOptions = "nosniff";
-            if (!context.Request.IsHttps)
-            {
-                await Results.Problem(statusCode: 400, title: "HTTPS is required.").ExecuteAsync(context);
-                return;
-            }
-
-            context.Response.Headers.StrictTransportSecurity = "max-age=31536000";
             await next(context);
         });
 

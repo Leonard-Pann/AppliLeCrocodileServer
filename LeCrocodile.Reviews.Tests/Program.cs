@@ -1,7 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -32,7 +30,7 @@ internal static class Program
             VerifyMigration(Path.Combine(directory, "migration.db"));
             VerifyAlcoholVotes(Path.Combine(directory, "alcohol.db"));
             await VerifyRepositoryAsync(Path.Combine(directory, "repository.db"));
-            await VerifyHttpsApiAsync(Path.Combine(directory, "api.db"));
+            await VerifyHttpApiAsync(Path.Combine(directory, "api.db"));
         }
         finally
         {
@@ -250,28 +248,13 @@ internal static class Program
         Check(rejected, message);
     }
 
-    private static async Task VerifyHttpsApiAsync(string databasePath)
+    private static async Task VerifyHttpApiAsync(string databasePath)
     {
-        using RSA key = RSA.Create(2048);
-        CertificateRequest certificateRequest = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-        SubjectAlternativeNameBuilder names = new SubjectAlternativeNameBuilder();
-        names.AddIpAddress(IPAddress.Loopback);
-        certificateRequest.CertificateExtensions.Add(names.Build());
-        using X509Certificate2 generatedCertificate = certificateRequest.CreateSelfSigned(
-            DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
-        using X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12(
-            generatedCertificate.Export(X509ContentType.Pfx), null, X509KeyStorageFlags.UserKeySet);
-        await using WebApplication server = CreateServer(databasePath, certificate);
+        await using WebApplication server = CreateServer(databasePath);
         await server.StartAsync();
         string[] addresses = server.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!
             .Addresses.ToArray();
-        using HttpClientHandler handler = new HttpClientHandler
-        {
-            // Trust only this test's ephemeral certificate. Production clients use normal platform certificate validation.
-            ServerCertificateCustomValidationCallback = (_, remote, _, _) => remote?.Thumbprint == certificate.Thumbprint
-        };
-        using HttpClient client = new HttpClient(handler) { BaseAddress = new Uri(addresses.Single(url => url.StartsWith("https:"))) };
+        using HttpClient client = new HttpClient { BaseAddress = new Uri(addresses.Single()) };
         Guid userId = Guid.NewGuid();
         string path = $"/api/v1/cocktails/ABBAYE/reviews?userId={userId:D}";
         using (HttpResponseMessage compatibility = await SendAsync(client,
@@ -284,7 +267,7 @@ internal static class Program
         {
             ReviewPage empty = await ReadAsync<ReviewPage>(emptyResponse);
             Check(emptyResponse.StatusCode == HttpStatusCode.OK && empty.TotalCount == 0,
-                "An HTTPS client can read an empty cocktail review page.");
+                "An HTTP client can read an empty cocktail review page.");
             Check(emptyResponse.Headers.CacheControl?.NoStore == true, "Review responses cannot be cached as stale community data.");
         }
 
@@ -365,7 +348,7 @@ internal static class Program
         using (HttpResponseMessage plaintext = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Get,
             addresses.Single(url => url.StartsWith("http:")) + "/health")))
         {
-            Check(plaintext.StatusCode == HttpStatusCode.BadRequest, "Plain HTTP is rejected even if an HTTP listener is configured.");
+            Check(plaintext.StatusCode == HttpStatusCode.OK, "The backend accepts HTTP from the TLS-terminating proxy.");
         }
 
         await Task.Delay(1100);
@@ -387,28 +370,26 @@ internal static class Program
         }
 
         await server.StopAsync();
-        await using WebApplication restarted = CreateServer(databasePath, certificate);
+        await using WebApplication restarted = CreateServer(databasePath);
         await restarted.StartAsync();
         string newAddress = restarted.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!
-            .Addresses.Single(url => url.StartsWith("https:"));
+            .Addresses.Single();
         using HttpResponseMessage afterRestart = await client.GetAsync(newAddress + path);
-        Check((await ReadAsync<ReviewPage>(afterRestart)).TotalCount == 1, "Reviews survive a full HTTPS server restart.");
+        Check((await ReadAsync<ReviewPage>(afterRestart)).TotalCount == 1, "Reviews survive a full HTTP server restart.");
         await restarted.StopAsync();
     }
 
-    private static WebApplication CreateServer(string databasePath, X509Certificate2 certificate)
+    private static WebApplication CreateServer(string databasePath)
     {
         return ServerApplication.Build(["--contentRoot", AppContext.BaseDirectory], builder =>
         {
             builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Database:Path"] = databasePath,
-                ["Kestrel:Endpoints:Https:Url"] = "https://127.0.0.1:0",
                 ["Kestrel:Endpoints:Http:Url"] = "http://127.0.0.1:0",
                 ["Logging:LogLevel:Default"] = "Error",
                 ["Logging:LogLevel:Microsoft.AspNetCore"] = "Error"
             });
-            builder.WebHost.ConfigureKestrel(options => options.ConfigureHttpsDefaults(https => https.ServerCertificate = certificate));
         });
     }
 
