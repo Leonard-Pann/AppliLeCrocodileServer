@@ -1,31 +1,59 @@
 # Docker deployment and recovery
 
-## Duck DNS certificate — 18 November 2026
+## Current deployment — 19 November 2026
 
-The running reviews service uses `reviews-duckdns.pfx` for `lecrocodile.duckdns.org`. Strict HTTPS health was checked
-using the hostname over local IPv4 and IPv6; public IPv6 and phone app access still need independent tests. The hostname
-currently has an IPv4 record only. The updater currently updates IPv4 only. The DNS-01 renewal was created with no
-automatic scheduler or deployment hook, so neither renewal nor Kestrel reload is automatic yet. Its current certificate
-expires 15 February 2027. The previous IP certificate remains available for rollback. The prior IP-certificate renewals
-may still rely on TCP 80; do not remove their rule until their lifecycle has been deliberately retired.
+The default `compose.yaml` runs three services: `duckdns`, `certificate` and `reviews`. It exposes HTTPS TCP 7443 on
+IPv4 only. Duck DNS is updated at start and hourly; failures retry in one hour. DNS caches, Docker or network downtime can
+extend the delay. Keep the hostname without an AAAA record. The mobile application uses the Duck DNS hostname.
 
-## Duck DNS IPv4 updater
+The dedicated certificate service obtains and renews a Let's Encrypt production certificate using Duck DNS DNS-01; TCP 80
+is not required. It checks for renewal every 12 hours and retries failures after one hour. ACME decides when renewal is due.
+The service publishes a PFX atomically to the shared `certificates` volume. The API checks changed PFX files and requests
+its own shutdown if a valid replacement is detected; Docker's `unless-stopped` policy restarts only that container. No
+Docker socket or scheduled Windows task is used. There is a short interruption during a renewal-triggered restart.
 
-The `duckdns` Compose service updates `lecrocodile.duckdns.org` on container start and every hour, using the
-public IPv4 detected by Duck DNS. It does not publish IPv6 or change the API URL or HTTPS certificate. Create an ignored
-`.duckdns-token` file in the repository root containing only the Duck DNS token. Restrict access to the account that runs
-Docker and administrators; never commit, paste, or share this token. The file is excluded from the Docker build context.
+The monitor checks the private key, hostname and validity dates, but does not verify the public trust chain or provide an
+independent alert if the restarted API cannot be reached. Monitor HTTPS, expiry and the logs; a container can remain running
+while renewal fails. The `acme-data` volume contains the ACME account and a copy of the Duck DNS token, and `certificates`
+contains an unencrypted private key. Protect the volumes and their backups. Docker administrators can access them. The
+local token ACL previously included additional sandbox principals with modify access; assess and restrict it without
+breaking Docker access. The secret is mounted read-only and excluded from the Docker build context.
+
+Production verification: a new Let's Encrypt certificate was issued for `lecrocodile.duckdns.org`, with a local expiry of
+17 February 2027 at 01:32:22. Normal TLS validation succeeded, and the served SHA-256 fingerprint matched the PFX in the
+shared volume. The certificate service was restarted and reported that renewal was not due; the API did not restart. A
+staging test exercised issuance, forced renewal, publication, backend restart and a changed served fingerprint. Production
+renewal has not yet occurred naturally. The database passed inspection with two reviews. The cutover backup is at
+`D:\Program files\LeCrocodile\Backups\reviews-cutover-auto-cert-20261119-023200.db` and in the backup volume. Copy a
+verified snapshot to a separate protected location; these copies are on the same host.
+
+Start or update from the server directory:
 
 ```powershell
 docker compose up -d --build
-docker compose logs --tail 20 duckdns
+docker compose ps
+docker compose logs --tail 30 certificate
+docker compose logs --tail 30 duckdns
+curl.exe -4 --fail --noproxy '*' https://lecrocodile.duckdns.org:7443/health
 ```
 
-The log should report a successful update. The service restarts with Docker Desktop after it has been created, unless
-explicitly stopped. Docker Desktop must itself start and the host must be online. DNS propagation and a new IPv4 port
-mapping can delay reachability. Update failures retry hourly. This does not prove that the phone app or certificate use
-the hostname: certificate issuance, renewal and application configuration still require separate work.
+The `.env` file is local and ignored; set `DUCKDNS_SUBDOMAIN` to the reserved subdomain. `.duckdns-token` must contain
+only its secret token. No secret should be placed in the image, source control, logs or messages. Start Docker Desktop at
+login on Windows; Docker restart policies do not start the Windows computer or Docker Desktop. On Linux, enable Docker
+at boot and test the same startup, persistence, certificate renewal, public HTTPS and backup restoration on the real host.
+Forward TCP 7443 to the host IPv4 and configure its firewall. Preserve the `lecrocodile` project name and named volumes.
+Never run `docker compose down -v` or prune the data volumes.
 
+`compose.legacy.yaml` records the old Windows PFX bind-mount configuration for rollback. If rollback is needed, keep the
+current SQLite data volume and use `docker compose -f compose.legacy.yaml up -d --no-deps --no-build reviews`, then verify
+strict HTTPS and the current database. The old PFX expires separately; rollback is not a permanent renewal solution.
+Do not schedule `Deployment/Check-DuckDnsCertificate.ps1`, which restarts the API even without a renewal.
+
+## Historical migration notes
+
+The sections below document earlier states and tests. Where they describe current status, startup, certificates, IPv6,
+port 80 or renewal, the current deployment section above takes precedence. Do not restore an old SQLite snapshot over the
+current database. Old IP-certificate renewals may still depend on TCP 80; inspect their role before cleaning them up.
 ## Windows deployment — 17 November 2026
 
 - Docker Desktop's Linux engine built the image successfully; all 55 backend checks passed in the image build.
@@ -136,10 +164,10 @@ docker compose ps
 docker compose logs --tail 100 reviews
 docker compose exec reviews id
 docker compose exec reviews dotnet LeCrocodile.Reviews.Api.dll --inspect /data/reviews.db
-curl.exe --fail --noproxy '*' 'https://[2001:861:5872:b2b0:492c:d813:fe01:4502]:7443/health'
+curl.exe -4 --fail --noproxy '*' 'https://lecrocodile.duckdns.org:7443/health'
 ```
 
-Start only when 7443 is free. Verify non-root identity, mounts, imported review, host IPv6 publication and strict TLS.
+Start only when 7443 is free. Verify non-root identity, mounts, imported review, IPv4 publication and strict TLS.
 Submit a labelled test review from a phone; reload it, restart Docker, and reload again. Record PC, Bbox Wi-Fi,
 unrelated Wi-Fi and 5G results separately. A health response does not prove the write path.
 
@@ -203,9 +231,7 @@ UFW alone controls them. **No remote Linux host or local Linux container has yet
 
 ## A stable URL usable from 5G
 
-IPv6 literals require usable IPv6 on the client. A DNS AAAA record alone cannot solve an IPv4-only mobile network.
-Recommended long-term: a hostname with IPv4 and IPv6 service on a Linux host, or an appropriately configured gateway/tunnel.
-A home-hosted alternative is Bbox IPv4 forwarding plus a stable hostname and dynamic DNS if needed. Verify WAN address and
+The deployment uses a Duck DNS hostname with IPv4. Bbox IPv4 forwarding and dynamic DNS must remain configured. Verify WAN address and
 inbound ports first. The PC must remain powered on. Adding a proxy requires reviewing trusted forwarded headers and
 per-client rate limiting. Rebuild and install the mobile app after URL changes; an installed bundled JSON does not update itself.
 
