@@ -23,11 +23,6 @@ public static class ServerApplication
             options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
         });
         builder.Services.AddProblemDetails();
-        if (builder.Configuration.GetValue<bool>("CertificateReload:Enabled"))
-        {
-            AppContext.SetSwitch("Microsoft.AspNetCore.Server.Kestrel.DisableCertificateFileWatching", true);
-            builder.Services.AddHostedService<CertificateRestartService>();
-        }
         builder.Services.AddSingleton(TimeProvider.System);
         string catalogPath = Path.Combine(builder.Environment.ContentRootPath, "Data/cocktail-ids.json");
         builder.Services.AddSingleton(new CocktailCatalog(catalogPath));
