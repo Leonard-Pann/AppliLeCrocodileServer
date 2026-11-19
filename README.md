@@ -11,13 +11,18 @@ can reference them.
 ## Delivered behavior
 
 - One review per installation UUID and cocktail. PUT creates or atomically replaces that review; retries do not duplicate votes.
-- Ratings are integers from 1 to 5. Nicknames contain 1–40 characters and comments 1–2000, after trimming.
+- Ratings are integers from 1 to 5. Nicknames contain 1–40 characters and comments 0–2000, after trimming.
+- A review can include one optional alcohol vote per installation: 0 (low), 1 (medium), or 2 (strong).
+  Omitting it when editing preserves the previous vote. The server maintains cached levels transactionally;
+  cocktails without votes have no level. Means below 2/3 are low, below 4/3 are medium, and the rest are strong.
 - Only known cocktail IDs from `LeCrocodile.Reviews.Api/Data/cocktail-ids.json` are accepted. This file contains the current
   337 menu IDs, including apostrophes. Update it when adding menu cocktails; existing reviews are retained.
 - Comments use descending immutable numeric IDs and keyset pagination. Rating counts and averages cover all reviews,
   independently of the requested page. A read transaction keeps each page consistent with its aggregate.
 - SQLite uses WAL, pooled connections, parameterized SQL, database constraints, an index for comment paging, and a unique
-  cocktail/installation constraint. Schema version 2 is created transactionally at startup; version 1 is migrated transactionally. Newer schemas are refused.
+  cocktail/installation constraint. Schema version 3 is created or migrated transactionally at startup. Newer schemas are refused.
+- `Compatibility:MinimumVersion` in `appsettings.json` sets the minimum mobile version as three numeric components.
+  The app checks `GET /api/v1/compatibility` at startup and on return after one hour, and displays an optional update prompt.
 - Five accepted requests per IP in **any rolling second**, with no waiting queue. All endpoints share the limit.
   Excess requests receive HTTP 429 and `Retry-After: 1`. Idle IP partitions are reclaimed by ASP.NET Core's limiter.
 - A 16 KiB request body limit, request header timeout, structured problem responses, no-store responses, and HTTPS enforcement.
@@ -200,7 +205,7 @@ return 413. SQL contention exceeding the busy timeout returns 503 with Retry-Aft
 
 ## Backups and maintenance
 
-The schema is managed with `PRAGMA user_version`; startup creates version 2 or migrates version 1 transactionally. Back up the database before upgrading; older servers cannot open version 2.
+The schema is managed with `PRAGMA user_version`; startup creates version 3 or migrates versions 1 and 2 transactionally. Back up the database before upgrading; older servers cannot open version 3.
 Future schema changes should add ordered transactional migrations rather than edit an existing database manually.
 
 Use SQLite's online backup API, including when the main server is running. From the published directory, with the same

@@ -30,6 +30,7 @@ internal static class Program
         try
         {
             VerifyMigration(Path.Combine(directory, "migration.db"));
+            VerifyAlcoholVotes(Path.Combine(directory, "alcohol.db"));
             await VerifyRepositoryAsync(Path.Combine(directory, "repository.db"));
             await VerifyHttpsApiAsync(Path.Combine(directory, "api.db"));
         }
@@ -99,6 +100,33 @@ internal static class Program
         Check(rating.Id == 42 && rating.Comment == "" && rating.Rating == 5,
             "Migrated databases accept a rating without a comment.");
         Check(DatabaseMaintenance.Inspect(databasePath) == 1, "Migrated databases remain valid for backup and import.");
+    }
+
+    private static void VerifyAlcoholVotes(string databasePath)
+    {
+        ReviewRepository repository = new ReviewRepository(databasePath);
+        repository.Initialize();
+        Guid first = Guid.NewGuid();
+        Guid second = Guid.NewGuid();
+        Guid third = Guid.NewGuid();
+        Check(repository.GetAlcoholSummaries(default).Length == 0, "Cocktails without votes have no alcohol level.");
+        repository.Save("ABBAYE", first, new SubmitReviewRequest("A", 4, "", 0), default);
+        Check(repository.GetAlcoholSummaries(default).Single().Level == 0, "A low vote produces a low level.");
+        repository.Save("ABBAYE", second, new SubmitReviewRequest("B", 4, "", 1), default);
+        repository.Save("ABBAYE", third, new SubmitReviewRequest("C", 4, "", 1), default);
+        Check(repository.GetAlcoholSummaries(default).Single().Level == 1, "Exactly two thirds is medium.");
+        repository.Save("ABBAYE", first, new SubmitReviewRequest("A", 4, "", 2), default);
+        repository.Save("ABBAYE", second, new SubmitReviewRequest("B", 4, "", 2), default);
+        repository.Save("ABBAYE", third, new SubmitReviewRequest("C", 4, "", 0), default);
+        Check(repository.GetAlcoholSummaries(default).Single().Level == 2, "Exactly four thirds is strong.");
+        repository.Save("ABBAYE", first, new SubmitReviewRequest("A", 5, "Updated"), default);
+        ReviewPage page = repository.GetPage("ABBAYE", first, null, 1, default);
+        Check(page.OwnReview is { AlcoholLevel: 2, Comment: "Updated" } && page.AlcoholLevel == 2,
+            "Editing without an alcohol value preserves the vote and returns the cached level and own review.");
+        Check(!page.Items.Any(review => review.IsOwnReview), "The own review is available even outside the first page.");
+        ReviewRepository reopened = new ReviewRepository(databasePath);
+        reopened.Initialize();
+        Check(reopened.GetAlcoholSummaries(default).Single().Level == 2, "The cached alcohol level survives restart.");
     }
 
     private static async Task VerifyRepositoryAsync(string databasePath)
@@ -198,7 +226,7 @@ internal static class Program
         {
             unsupported.Open();
             using SqliteCommand command = unsupported.CreateCommand();
-            command.CommandText = "PRAGMA user_version=3;";
+            command.CommandText = "PRAGMA user_version=4;";
             command.ExecuteNonQuery();
         }
 
@@ -246,6 +274,12 @@ internal static class Program
         using HttpClient client = new HttpClient(handler) { BaseAddress = new Uri(addresses.Single(url => url.StartsWith("https:"))) };
         Guid userId = Guid.NewGuid();
         string path = $"/api/v1/cocktails/ABBAYE/reviews?userId={userId:D}";
+        using (HttpResponseMessage compatibility = await SendAsync(client,
+            () => new HttpRequestMessage(HttpMethod.Get, "/api/v1/compatibility")))
+        {
+            Check((await ReadAsync<AppCompatibility>(compatibility)).MinimumVersion == "1.0.0",
+                "The compatibility endpoint exposes the configured minimum version.");
+        }
         using (HttpResponseMessage emptyResponse = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Get, path)))
         {
             ReviewPage empty = await ReadAsync<ReviewPage>(emptyResponse);
@@ -256,7 +290,7 @@ internal static class Program
 
         using (HttpResponseMessage response = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Put, path)
         {
-            Content = JsonContent.Create(new SubmitReviewRequest("  Visitor  ", 4, "  Très bon 🍹  "), options: JsonOptions)
+            Content = JsonContent.Create(new SubmitReviewRequest("  Visitor  ", 4, "  Très bon 🍹  ", 2), options: JsonOptions)
         }))
         {
             ReviewResponse saved = await ReadAsync<ReviewResponse>(response);
@@ -271,6 +305,13 @@ internal static class Program
         {
             Check(ratingOnly.StatusCode == HttpStatusCode.OK && (await ReadAsync<ReviewResponse>(ratingOnly)).Comment == "",
                 "The API accepts a rating without a comment.");
+        }
+
+        using (HttpResponseMessage alcohol = await SendAsync(client, () => new HttpRequestMessage(HttpMethod.Get,
+            $"/api/v1/cocktails/alcohol-summaries?userId={userId:D}")))
+        {
+            Check((await ReadAsync<AlcoholSummary[]>(alcohol)) is [{ CocktailId: "ABBAYE", Level: 2 }],
+                "The alcohol endpoint returns cached votes, including votes preserved during edits.");
         }
 
         string otherPath = $"/api/v1/cocktails/ABBAYE/reviews?userId={Guid.NewGuid():D}";
@@ -298,6 +339,7 @@ internal static class Program
             new SubmitReviewRequest(new string('x', 41), 3, "Comment"),
             new SubmitReviewRequest("Visitor", 0, "Comment"),
             new SubmitReviewRequest("Visitor", 6, "Comment"),
+            new SubmitReviewRequest("Visitor", 3, "Comment", 3),
             new SubmitReviewRequest("Visitor", 3, new string('x', 2001)),
             new SubmitReviewRequest("Bad\0Name", 3, "Comment"),
             new SubmitReviewRequest(null!, 3, null!)

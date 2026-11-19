@@ -29,14 +29,31 @@ public sealed class ReviewRepository
         command.ExecuteNonQuery();
         command.CommandText = "PRAGMA user_version;";
         long version = (long)command.ExecuteScalar()!;
-        if (version > 2)
+        if (version > 3)
         {
             throw new InvalidDataException(
                 "The database schema is newer than this server. Upgrade the server before starting it.");
         }
 
+        if (version == 3)
+        {
+            return;
+        }
+
         if (version == 2)
         {
+            using SqliteTransaction migration = connection.BeginTransaction();
+            command.Transaction = migration;
+            command.CommandText = """
+                ALTER TABLE Reviews ADD COLUMN AlcoholLevel INTEGER CHECK(AlcoholLevel BETWEEN 0 AND 2);
+                CREATE TABLE AlcoholSummaries (
+                    CocktailId TEXT PRIMARY KEY,
+                    Level INTEGER NOT NULL CHECK(Level BETWEEN 0 AND 2)
+                ) STRICT;
+                PRAGMA user_version=3;
+                """;
+            command.ExecuteNonQuery();
+            migration.Commit();
             return;
         }
 
@@ -64,6 +81,7 @@ public sealed class ReviewRepository
                 """;
             command.ExecuteNonQuery();
             migration.Commit();
+            Initialize();
             return;
         }
 
@@ -86,6 +104,24 @@ public sealed class ReviewRepository
             """;
         command.ExecuteNonQuery();
         transaction.Commit();
+        Initialize();
+    }
+
+    public AlcoholSummary[] GetAlcoholSummaries(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT CocktailId, Level FROM AlcoholSummaries ORDER BY CocktailId;";
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<AlcoholSummary> result = [];
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(new AlcoholSummary(reader.GetString(0), reader.GetInt32(1)));
+        }
+
+        return result.ToArray();
     }
 
     public ReviewSummary[] GetSummaries(CancellationToken cancellationToken)
@@ -148,7 +184,7 @@ public sealed class ReviewRepository
         }
 
         command.CommandText = """
-            SELECT Id, UserName, Rating, Comment, CreatedAt, UpdatedAt, UserId FROM Reviews
+            SELECT Id, UserName, Rating, Comment, CreatedAt, UpdatedAt, UserId, AlcoholLevel FROM Reviews
             WHERE CocktailId=$cocktail AND Id < $before ORDER BY Id DESC LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$before", before ?? long.MaxValue);
@@ -169,21 +205,38 @@ public sealed class ReviewRepository
             reviews.RemoveAt(reviews.Count - 1);
         }
 
+        command.CommandText = """
+            SELECT Id, UserName, Rating, Comment, CreatedAt, UpdatedAt, UserId, AlcoholLevel FROM Reviews
+            WHERE CocktailId=$cocktail AND UserId=$user;
+            """;
+        command.Parameters.AddWithValue("$user", userId.ToString("N"));
+        ReviewResponse? ownReview;
+        using (SqliteDataReader reader = command.ExecuteReader())
+        {
+            ownReview = reader.Read() ? ReadReview(reader, userId) : null;
+        }
+
+        command.CommandText = "SELECT Level FROM AlcoholSummaries WHERE CocktailId=$cocktail;";
+        object? levelValue = command.ExecuteScalar();
+        int? level = levelValue is null ? null : Convert.ToInt32(levelValue, CultureInfo.InvariantCulture);
         transaction.Commit();
-        return new ReviewPage(reviews.ToArray(), totalCount, averageRating, hasMore ? reviews[^1].Id : null);
+        return new ReviewPage(reviews.ToArray(), totalCount, averageRating, hasMore ? reviews[^1].Id : null, ownReview, level);
     }
 
     public ReviewResponse Save(string cocktailId, Guid userId, SubmitReviewRequest request, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using SqliteConnection connection = OpenConnection();
+        using SqliteTransaction transaction = connection.BeginTransaction();
         using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO Reviews(CocktailId, UserId, UserName, Rating, Comment, CreatedAt, UpdatedAt)
-            VALUES($cocktail, $user, $name, $rating, $comment, $now, $now)
+            INSERT INTO Reviews(CocktailId, UserId, UserName, Rating, Comment, CreatedAt, UpdatedAt, AlcoholLevel)
+            VALUES($cocktail, $user, $name, $rating, $comment, $now, $now, $alcohol)
             ON CONFLICT(CocktailId, UserId) DO UPDATE SET
-                UserName=excluded.UserName, Rating=excluded.Rating, Comment=excluded.Comment, UpdatedAt=excluded.UpdatedAt
-            RETURNING Id, UserName, Rating, Comment, CreatedAt, UpdatedAt, UserId;
+                UserName=excluded.UserName, Rating=excluded.Rating, Comment=excluded.Comment, UpdatedAt=excluded.UpdatedAt,
+                AlcoholLevel=COALESCE(excluded.AlcoholLevel, Reviews.AlcoholLevel)
+            RETURNING Id, UserName, Rating, Comment, CreatedAt, UpdatedAt, UserId, AlcoholLevel;
             """;
         command.Parameters.AddWithValue("$cocktail", cocktailId);
         command.Parameters.AddWithValue("$user", userId.ToString("N"));
@@ -191,9 +244,28 @@ public sealed class ReviewRepository
         command.Parameters.AddWithValue("$rating", request.Rating);
         command.Parameters.AddWithValue("$comment", request.Comment.Trim());
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
-        using SqliteDataReader reader = command.ExecuteReader();
-        reader.Read();
-        return ReadReview(reader, userId);
+        command.Parameters.AddWithValue("$alcohol", (object?)request.AlcoholLevel ?? DBNull.Value);
+        ReviewResponse result;
+        using (SqliteDataReader reader = command.ExecuteReader())
+        {
+            reader.Read();
+            result = ReadReview(reader, userId);
+        }
+
+        if (request.AlcoholLevel is not null)
+        {
+            command.CommandText = """
+                INSERT INTO AlcoholSummaries(CocktailId, Level)
+                SELECT $cocktail, CASE WHEN SUM(AlcoholLevel) * 3 < COUNT(*) * 2 THEN 0
+                    WHEN SUM(AlcoholLevel) * 3 < COUNT(*) * 4 THEN 1 ELSE 2 END
+                FROM Reviews WHERE CocktailId=$cocktail AND AlcoholLevel IS NOT NULL
+                ON CONFLICT(CocktailId) DO UPDATE SET Level=excluded.Level;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+        return result;
     }
 
     private SqliteConnection OpenConnection()
@@ -215,6 +287,7 @@ public sealed class ReviewRepository
     {
         return new ReviewResponse(reader.GetInt64(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3),
             DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
-            DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture), reader.GetString(6) == userId.ToString("N"));
+            DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture), reader.GetString(6) == userId.ToString("N"),
+            reader.IsDBNull(7) ? null : reader.GetInt32(7));
     }
 }

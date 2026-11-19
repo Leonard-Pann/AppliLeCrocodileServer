@@ -80,6 +80,13 @@ public static class ServerApplication
             await next(context);
         });
 
+        string minimumVersion = builder.Configuration["Compatibility:MinimumVersion"] ?? "1.0.0";
+        if (!Version.TryParse(minimumVersion, out Version? parsedVersion) || parsedVersion.Build < 0 || parsedVersion.Revision >= 0)
+        {
+            throw new InvalidDataException("Compatibility:MinimumVersion must contain three numeric components.");
+        }
+
+        application.MapGet("/api/v1/compatibility", () => Results.Ok(new AppCompatibility(minimumVersion)));
         application.MapGet("/health", () => Results.Ok(new { Status = "Healthy" }));
         RouteGroupBuilder api = application.MapGroup("/api/v1/cocktails");
         api.AddEndpointFilter(async (context, next) =>
@@ -92,6 +99,8 @@ public static class ServerApplication
 
             return await next(context);
         });
+        api.MapGet("/alcohol-summaries", (ReviewRepository repository, CancellationToken cancellationToken) =>
+            Results.Ok(repository.GetAlcoholSummaries(cancellationToken)));
         api.MapGet("/review-summaries", (ReviewRepository repository, CancellationToken cancellationToken) =>
             Results.Ok(repository.GetSummaries(cancellationToken)));
         api.MapGet("/{cocktailId}/reviews", GetReviews);
@@ -150,6 +159,11 @@ public static class ServerApplication
             || request.Comment.Any(character => char.IsControl(character) && character is not '\r' and not '\n' and not '\t'))
         {
             errors["comment"] = ["Use at most 2000 characters. Only line breaks and tabs are allowed as control characters."];
+        }
+
+        if (request.AlcoholLevel is < 0 or > 2)
+        {
+            errors["alcoholLevel"] = ["Use 0, 1 or 2."];
         }
 
         return errors.Count > 0 ? Results.ValidationProblem(errors) : Results.Ok(
